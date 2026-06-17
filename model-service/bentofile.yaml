@@ -1,0 +1,14 @@
+service: "service:PhobertReactionaryClassifierService"
+labels:
+  owner: user
+  project: netclean-vn
+  model: phobert-reactionary-classifier
+python:
+  packages:
+    - torch
+    - transformers
+    - numpy
+    - pyvi
+    - bentoml>=1.4.0
+models:
+  - phobert_reactionary_classifier:latest
