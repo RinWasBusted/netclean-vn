@@ -39,11 +39,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
       item.appendChild(header);
       item.appendChild(caption);
+
+      if (post.prediction) {
+        const predictionDiv = document.createElement('div');
+        predictionDiv.style.marginTop = '6px';
+        predictionDiv.style.padding = '4px 6px';
+        predictionDiv.style.borderRadius = '4px';
+        predictionDiv.style.backgroundColor = '#222';
+        predictionDiv.style.fontSize = '10px';
+        predictionDiv.style.color = '#aaa';
+
+        let predictionText = 'Prediction probabilities:<br>';
+        for (const [label, val] of Object.entries(post.prediction)) {
+          const percentage = (val * 100).toFixed(1);
+          predictionText += `• <strong>${label}</strong>: ${percentage}%<br>`;
+        }
+        predictionDiv.innerHTML = predictionText;
+        item.appendChild(predictionDiv);
+      }
+
       feedContainer.appendChild(item);
     });
   }
 
-  // Load saved settings & scraped items
+// Load saved settings & scraped items
   chrome.storage.local.get(['hideReplies', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], (data) => {
     hideRepliesCheck.checked = !!data.hideReplies;
     highlightCheck.checked = !!data.highlightKeywords;
