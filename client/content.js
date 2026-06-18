@@ -89,9 +89,129 @@ function stopObserver() {
   }
 }
 
+// WebSocket manager
+let socket = null;
+let isReconnecting = false;
+const socketQueue = [];
+
+function getWsUrl(httpUrl) {
+  return httpUrl.replace(/^http/, 'ws');
+}
+
+function initWebSocketConnection() {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const wsUrl = getWsUrl(serverUrl);
+  console.log('Connecting to WebSocket server:', wsUrl);
+  socket = new WebSocket(wsUrl);
+
+  socket.onopen = () => {
+    console.log('WebSocket connection established.');
+    isReconnecting = false;
+    
+    // Send queued requests
+    while (socketQueue.length > 0) {
+      const payload = socketQueue.shift();
+      sendWsMessage(payload);
+    }
+
+    // Classify existing unclassified posts on reconnect
+    chrome.storage.local.get(['scrapedPostsList'], (res) => {
+      const list = res.scrapedPostsList || [];
+      const unclassified = list.filter(item => !item.prediction && item.caption && item.caption !== '[No text content]');
+      if (unclassified.length > 0) {
+        console.log(`Classifying ${unclassified.length} existing unclassified posts on reconnect`);
+        classifyPostsBatch(unclassified);
+      }
+    });
+  };
+
+  socket.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === 'classification_result' && message.data) {
+        handleClassificationResults(message.data);
+      } else if (message.type === 'error') {
+        console.error('WebSocket server error:', message.message);
+      }
+    } catch (err) {
+      console.error('Error handling WebSocket message:', err);
+    }
+  };
+
+  socket.onclose = (event) => {
+    console.warn(`WebSocket closed: code=${event.code}, reason=${event.reason}. Retrying in 3 seconds...`);
+    socket = null;
+    scheduleReconnect();
+  };
+
+  socket.onerror = (err) => {
+    console.error('WebSocket error:', err);
+    socket.close();
+  };
+}
+
+function scheduleReconnect() {
+  if (isReconnecting) return;
+  isReconnecting = true;
+  setTimeout(() => {
+    initWebSocketConnection();
+  }, 3000);
+}
+
+function sendWsMessage(payload) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(payload));
+  } else {
+    socketQueue.push(payload);
+    initWebSocketConnection();
+  }
+}
+
+function handleClassificationResults(results) {
+  chrome.storage.local.get(['scrapedPostsList', 'scrapedCount'], (res) => {
+    let list = res.scrapedPostsList || [];
+    const count = res.scrapedCount || list.length;
+    let updated = false;
+
+    results.forEach((resItem) => {
+      const idx = list.findIndex(li => li.id === resItem.id);
+      if (idx !== -1 && resItem.prediction) {
+        list[idx].prediction = resItem.prediction;
+        updated = true;
+      }
+    });
+
+    if (updated) {
+      scrapedPostsList = list;
+      chrome.storage.local.set({ scrapedPostsList: list }, () => {
+        // Notify popup to refresh UI
+        chrome.runtime.sendMessage({
+          type: 'POSTS_UPDATED',
+          scrapedCount: count,
+          scrapedPostsList: list
+        }, () => {
+          if (chrome.runtime.lastError) {
+            // Ignore error if popup is closed
+          }
+        });
+
+        // Re-run processPage to apply DOM hiding/filtering to newly classified posts
+        processPage();
+      });
+    }
+  });
+}
+
 // Initialize settings and scraped posts from local storage
 chrome.storage.local.get(['autoClean', 'hideReplies', 'hideReactionary', 'scrapedCount', 'scrapedPostsList'], async (data) => {
   await loadEnv();
+  
+  // Establish connection after serverUrl is loaded
+  initWebSocketConnection();
+
   settings.autoClean = data.autoClean !== undefined ? !!data.autoClean : true;
   settings.hideReplies = !!data.hideReplies;
   settings.hideReactionary = data.hideReactionary !== undefined ? !!data.hideReactionary : true;
@@ -362,12 +482,31 @@ function getPostUniqueId(post, textContent) {
 }
 
 /**
+ * Helper to check if a descendant belongs directly to the post container
+ * and is not inside any nested child post container.
+ */
+function isDirectDescendant(post, descendant) {
+  let current = descendant.parentElement;
+  while (current && current !== post) {
+    if (
+      current.tagName === 'ARTICLE' ||
+      current.getAttribute('role') === 'article' ||
+      current.getAttribute('data-pressable-container') === 'true'
+    ) {
+      return false;
+    }
+    current = current.parentElement;
+  }
+  return true;
+}
+
+/**
  * Extract username, caption, and the target DOM element that contains the caption details
  */
 function extractPostCaption(post) {
   // Get username
   let username = 'Unknown';
-  const userLink = post.querySelector('a[href^="/@"]');
+  const userLink = Array.from(post.querySelectorAll('a[href^="/@"]')).find(link => isDirectDescendant(post, link));
   if (userLink) {
     const href = userLink.getAttribute('href');
     const match = href.match(/^\/@([^\/]+)/);
@@ -377,14 +516,14 @@ function extractPostCaption(post) {
       username = href.substring(2);
     }
   } else {
-    const fallbackLink = post.querySelector('a');
+    const fallbackLink = Array.from(post.querySelectorAll('a')).find(link => isDirectDescendant(post, link));
     if (fallbackLink && fallbackLink.textContent) {
       username = fallbackLink.textContent.trim();
     }
   }
 
   // Look for elements with dir="auto" which Threads uses for body text and headers
-  const textElements = Array.from(post.querySelectorAll('[dir="auto"]'));
+  const textElements = Array.from(post.querySelectorAll('[dir="auto"]')).filter(elem => isDirectDescendant(post, elem));
   let caption = '';
   let targetElement = null;
   
@@ -429,7 +568,7 @@ function extractPostCaption(post) {
   
   if (!caption) {
     // Search within span tags as fallback
-    const spans = Array.from(post.querySelectorAll('span'));
+    const spans = Array.from(post.querySelectorAll('span')).filter(span => isDirectDescendant(post, span));
     for (const span of spans) {
       let text = span.textContent.replace(/&nbsp;/g, ' ').replace(/[\s\u00A0\xa0]+/g, ' ').trim();
       if (text.endsWith('Translate')) {
@@ -457,8 +596,9 @@ function detectIfReply(post) {
   // Threads replies usually contain thread lines connecting them, 
   // or have a specific structure where the post text starts with/contains user tags.
   // We check for elements resembling the vertical thread connector lines (typically divs with absolute positioning and width ~2px).
-  const lines = post.querySelectorAll('div[style*="width: 2px"], div[style*="width:2px"]');
-  if (lines.length > 0) {
+  const lines = Array.from(post.querySelectorAll('div[style*="width: 2px"], div[style*="width:2px"]'));
+  const directLines = lines.filter(line => isDirectDescendant(post, line));
+  if (directLines.length > 0) {
     return true;
   }
   // Check if it resides in a nested block or sibling structures representing replies
@@ -498,57 +638,15 @@ function classifyPostsBatch(newItems) {
     const validItems = batchToProcess.filter(item => item.caption && item.caption !== '[No text content]');
     if (validItems.length === 0) return;
 
-    const texts = validItems.map(item => item.caption);
+    // Send via WebSocket instead of Fetch API
+    const itemsPayload = validItems.map(item => ({
+      id: item.id,
+      text: item.caption
+    }));
 
-    fetch(`${serverUrl}/api/v1/classify`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ texts })
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success && data.data && data.data.length > 0) {
-        chrome.storage.local.get(['scrapedPostsList', 'scrapedCount'], (res) => {
-          let list = res.scrapedPostsList || [];
-          const count = res.scrapedCount || list.length;
-          let updated = false;
-
-          validItems.forEach((item, index) => {
-            const prediction = data.data[index];
-            if (prediction) {
-              const idx = list.findIndex(li => li.id === item.id);
-              if (idx !== -1) {
-                list[idx].prediction = prediction;
-                updated = true;
-              }
-            }
-          });
-
-          if (updated) {
-            scrapedPostsList = list;
-            chrome.storage.local.set({ scrapedPostsList: list }, () => {
-              // Notify popup to refresh UI
-              chrome.runtime.sendMessage({
-                type: 'POSTS_UPDATED',
-                scrapedCount: count,
-                scrapedPostsList: list
-              }, () => {
-                if (chrome.runtime.lastError) {
-                  // Ignore error if popup is closed
-                }
-              });
-
-              // Re-run processPage to apply DOM hiding/filtering to newly classified posts
-              processPage();
-            });
-          }
-        });
-      }
-    })
-    .catch(err => {
-      console.error('Error classifying batch of posts:', err);
+    sendWsMessage({
+      type: 'classify',
+      items: itemsPayload
     });
   }, 250); // wait 250ms for scroll-induced scrapings to group together
 }

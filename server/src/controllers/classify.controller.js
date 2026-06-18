@@ -1,6 +1,34 @@
 import axios from 'axios';
 
 /**
+ * Helper to perform classification using the model service.
+ */
+export const performClassification = async (texts) => {
+  if (!texts || !Array.isArray(texts) || texts.length === 0) {
+    return [];
+  }
+  const modelServiceUrl = process.env.MODEL_SERVICE_URL || 'http://localhost:3000';
+  
+  // Call the BentoML /predict endpoint
+  const response = await axios.post(`${modelServiceUrl}/predict`, {
+    texts: texts
+  });
+
+  // Map predictions to REACTIONARY or NORMAL based on label probabilities
+  return response.data.map(prediction => {
+    const antiGovProb = prediction.ANTI_GOVERNMENT_REGIME || 0;
+    const inciteViolenceProb = prediction.INCITE_VIOLENCE_SOCIAL_DISORDER || 0;
+    
+    const isReactionary = antiGovProb > 0.5 || inciteViolenceProb > 0.5;
+    
+    return {
+      classification: isReactionary ? 'REACTIONARY' : 'NORMAL',
+      probabilities: prediction
+    };
+  });
+};
+
+/**
  * @desc    Classify an array of texts using the model service
  * @route   POST /api/v1/classify
  * @access  Public
@@ -31,25 +59,7 @@ export const classifyTexts = async (req, res, next) => {
       });
     }
 
-    const modelServiceUrl = process.env.MODEL_SERVICE_URL || 'http://localhost:3000';
-
-    // Call the BentoML /predict endpoint
-    const response = await axios.post(`${modelServiceUrl}/predict`, {
-      texts: texts
-    });
-
-    // Map predictions to REACTIONARY or NORMAL based on label probabilities
-    const processedPredictions = response.data.map(prediction => {
-      const antiGovProb = prediction.ANTI_GOVERNMENT_REGIME || 0;
-      const inciteViolenceProb = prediction.INCITE_VIOLENCE_SOCIAL_DISORDER || 0;
-      
-      const isReactionary = antiGovProb > 0.5 || inciteViolenceProb > 0.5;
-      
-      return {
-        classification: isReactionary ? 'REACTIONARY' : 'NORMAL',
-        probabilities: prediction
-      };
-    });
+    const processedPredictions = await performClassification(texts);
 
     res.status(200).json({
       success: true,
