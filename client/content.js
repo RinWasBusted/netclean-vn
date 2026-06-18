@@ -6,11 +6,33 @@
 
 let settings = {
   hideReplies: false,
+  hideReactionary: true,
   highlightKeywords: false,
   keywords: ''
 };
 
 let serverUrl = 'http://localhost:5000'; // fallback default
+
+// Inject a stable stylesheet using an attribute selector (immune to React's class-stripping/clobbering)
+const extStyle = document.createElement('style');
+extStyle.innerHTML = `
+  [data-ext-hidden="true"] {
+    display: none !important;
+    opacity: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    pointer-events: none !important;
+  }
+`;
+
+// Safely append avoiding null document.head crashes if injected early
+if (document.head) {
+  document.head.appendChild(extStyle);
+} else {
+  document.addEventListener('DOMContentLoaded', () => document.head.appendChild(extStyle));
+}
 
 // Load .env variables
 async function loadEnv() {
@@ -41,10 +63,27 @@ const processedPosts = new Set();
 let scrapedCount = 0;
 let scrapedPostsList = [];
 
+// Set up a mutation observer to handle dynamically loaded posts on scroll
+let observer = null;
+let isProcessing = false;
+
+function startObserver() {
+  if (observer) return;
+  observer = new MutationObserver(() => {
+    if (isProcessing) return;
+    processPage();
+  });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+}
+
 // Initialize settings and scraped posts from local storage
-chrome.storage.local.get(['hideReplies', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], async (data) => {
+chrome.storage.local.get(['hideReplies', 'hideReactionary', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], async (data) => {
   await loadEnv();
   settings.hideReplies = !!data.hideReplies;
+  settings.hideReactionary = data.hideReactionary !== undefined ? !!data.hideReactionary : true;
   settings.highlightKeywords = !!data.highlightKeywords;
   settings.keywords = data.keywords || '';
   scrapedCount = data.scrapedCount || 0;
@@ -56,6 +95,7 @@ chrome.storage.local.get(['hideReplies', 'highlightKeywords', 'keywords', 'scrap
   });
   
   processPage();
+  startObserver();
 });
 
 // Listen for messages/updates from popup
@@ -85,13 +125,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * Scrape details and manipulate UI elements
  */
 function findPostElements() {
-  const posts = Array.from(document.querySelectorAll('article, [role="article"]'));
+  // Try finding standard article elements first
+  let posts = Array.from(document.querySelectorAll('article, [role="article"], [data-pressable-container="true"]'));
+  
+  // If no containers found, look for container elements wrapping around Thread post links
   const detailLinks = document.querySelectorAll('a[href*="/post/"]');
   const seen = new Set(posts);
   
   for (const link of detailLinks) {
     let current = link.parentElement;
     while (current && current !== document.body) {
+      // Look for interactive thread action wrappers (containing Like/Reply buttons)
       const titles = Array.from(current.querySelectorAll('title, svg[aria-label], [aria-label]'));
       const hasActions = titles.some(t => {
         const text = (t.textContent || t.getAttribute('aria-label') || '').trim();
@@ -112,21 +156,33 @@ function findPostElements() {
 }
 
 function processPage() {
+  if (isProcessing) return;
+  isProcessing = true;
   const posts = findPostElements();
   let newPostsScraped = false;
   const newPostsToClassify = [];
 
-  posts.forEach((post) => {
-    // 1. Scraping and identifying post unique text
-    const textContent = post.innerText || '';
-    const postId = getPostUniqueId(post, textContent);
+  try {
+    posts.forEach((post) => {
+    // Identify the specific tag containing the caption
+    const postDetails = extractPostCaption(post);
+    const contentTag = postDetails.targetElement;
+
+    // Use a persistent data attribute for the unique post ID to prevent ID shifting when hidden
+    let postId = post.getAttribute('data-ext-post-id');
+    if (!postId) {
+      // Create a stable key from the username and stable caption text, avoiding transient components like timestamps and action text
+      const stableText = postDetails.username + postDetails.caption;
+      postId = getPostUniqueId(post, stableText);
+      post.setAttribute('data-ext-post-id', postId);
+    }
+
+    const textContent = postDetails.caption;
 
     if (!processedPosts.has(postId)) {
       processedPosts.add(postId);
       scrapedCount++;
 
-      // Extract details
-      const postDetails = extractPostCaption(post);
       const postItem = {
         id: postId,
         username: postDetails.username,
@@ -147,10 +203,31 @@ function processPage() {
 
     // 2. Modifying UI based on settings
     const isReply = detectIfReply(post);
-    if (isReply && settings.hideReplies) {
-      post.style.display = 'none';
+    
+    // Check if the current DOM post matches any previously cached scraped post that was flagged as REACTIONARY
+    let isReactionaryPost = false;
+    const matchedCachedPost = scrapedPostsList.find(item => item.id === postId);
+    if (matchedCachedPost && matchedCachedPost.prediction && matchedCachedPost.prediction.classification === 'REACTIONARY') {
+      isReactionaryPost = true;
+    }
+
+    if ((isReply && settings.hideReplies) || (isReactionaryPost && settings.hideReactionary)) {
+      post.setAttribute('data-ext-hidden', 'true');
+
+      // Clean up any temporary debugging highlight styles
+      if (contentTag) {
+        contentTag.style.removeProperty('border');
+        contentTag.style.removeProperty('background-color');
+        contentTag.style.removeProperty('color');
+      }
     } else {
-      post.style.display = ''; // Reset display
+      if (contentTag) {
+        contentTag.style.removeProperty('border');
+        contentTag.style.removeProperty('background-color');
+        contentTag.style.removeProperty('color');
+      }
+      
+      post.removeAttribute('data-ext-hidden');
     }
 
     // Keyword highlighting/filtering
@@ -195,6 +272,9 @@ function processPage() {
       }
     });
   }
+  } finally {
+    isProcessing = false;
+  }
 }
 
 /**
@@ -206,7 +286,7 @@ function getPostUniqueId(post, textContent) {
 }
 
 /**
- * Extract username and caption details from the post node
+ * Extract username, caption, and the target DOM element that contains the caption details
  */
 function extractPostCaption(post) {
   // Get username
@@ -230,6 +310,7 @@ function extractPostCaption(post) {
   // Look for elements with dir="auto" which Threads uses for body text and headers
   const textElements = Array.from(post.querySelectorAll('[dir="auto"]'));
   let caption = '';
+  let targetElement = null;
   
   for (const elem of textElements) {
     // Clone element to clean up any nested Translate buttons/text
@@ -266,6 +347,7 @@ function extractPostCaption(post) {
     // We accumulate text elements or choose the longest/first substantial block
     if (text.length > caption.length) {
       caption = text;
+      targetElement = elem;
     }
   }
   
@@ -279,6 +361,7 @@ function extractPostCaption(post) {
       }
       if (text.length > 15 && !text.includes('Reply') && !text.includes('Repost') && text !== username) {
         caption = text;
+        targetElement = span;
         break;
       }
     }
@@ -286,7 +369,8 @@ function extractPostCaption(post) {
 
   return {
     username,
-    caption: caption || '[No text content]'
+    caption: caption || '[No text content]',
+    targetElement
   };
 }
 
@@ -305,15 +389,7 @@ function detectIfReply(post) {
   return false;
 }
 
-// Set up a mutation observer to handle dynamically loaded posts on scroll
-const observer = new MutationObserver(() => {
-  processPage();
-});
 
-observer.observe(document.body, {
-  childList: true,
-  subtree: true
-});
 
 /**
  * Sends a batch of post captions to our Node server for classification
@@ -369,6 +445,7 @@ function classifyPostsBatch(newItems) {
           });
 
           if (updated) {
+            scrapedPostsList = list;
             chrome.storage.local.set({ scrapedPostsList: list }, () => {
               // Notify popup to refresh UI
               chrome.runtime.sendMessage({
@@ -380,6 +457,9 @@ function classifyPostsBatch(newItems) {
                   // Ignore error if popup is closed
                 }
               });
+
+              // Re-run processPage to apply DOM hiding/filtering to newly classified posts
+              processPage();
             });
           }
         });

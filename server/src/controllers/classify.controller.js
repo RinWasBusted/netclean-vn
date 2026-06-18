@@ -38,9 +38,22 @@ export const classifyTexts = async (req, res, next) => {
       texts: texts
     });
 
+    // Map predictions to REACTIONARY or NORMAL based on label probabilities
+    const processedPredictions = response.data.map(prediction => {
+      const antiGovProb = prediction.ANTI_GOVERNMENT_REGIME || 0;
+      const inciteViolenceProb = prediction.INCITE_VIOLENCE_SOCIAL_DISORDER || 0;
+      
+      const isReactionary = antiGovProb > 0.5 || inciteViolenceProb > 0.5;
+      
+      return {
+        classification: isReactionary ? 'REACTIONARY' : 'NORMAL',
+        probabilities: prediction
+      };
+    });
+
     res.status(200).json({
       success: true,
-      data: response.data
+      data: processedPredictions
     });
   } catch (error) {
     // If the model-service returned an error response

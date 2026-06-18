@@ -1,5 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   const hideRepliesCheck = document.getElementById('hideReplies');
+  const hideReactionaryCheck = document.getElementById('hideReactionary');
   const highlightCheck = document.getElementById('highlightKeywords');
   const keywordInput = document.getElementById('keywordInput');
   const saveBtn = document.getElementById('saveBtn');
@@ -45,12 +46,18 @@ document.addEventListener('DOMContentLoaded', () => {
         predictionDiv.style.marginTop = '6px';
         predictionDiv.style.padding = '4px 6px';
         predictionDiv.style.borderRadius = '4px';
-        predictionDiv.style.backgroundColor = '#222';
+        
+        const isReactionary = post.prediction.classification === 'REACTIONARY';
+        predictionDiv.style.backgroundColor = isReactionary ? 'rgba(255, 48, 64, 0.15)' : '#222';
+        predictionDiv.style.border = isReactionary ? '1px solid #ff3040' : '1px solid #333';
         predictionDiv.style.fontSize = '10px';
-        predictionDiv.style.color = '#aaa';
+        predictionDiv.style.color = isReactionary ? '#ff8080' : '#aaa';
 
-        let predictionText = 'Prediction probabilities:<br>';
-        for (const [label, val] of Object.entries(post.prediction)) {
+        let predictionText = `<strong>Status:</strong> ${post.prediction.classification}<br>`;
+        predictionText += 'Probabilities:<br>';
+        
+        const probs = post.prediction.probabilities || {};
+        for (const [label, val] of Object.entries(probs)) {
           const percentage = (val * 100).toFixed(1);
           predictionText += `• <strong>${label}</strong>: ${percentage}%<br>`;
         }
@@ -63,8 +70,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
 // Load saved settings & scraped items
-  chrome.storage.local.get(['hideReplies', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], (data) => {
+  chrome.storage.local.get(['hideReplies', 'hideReactionary', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], (data) => {
     hideRepliesCheck.checked = !!data.hideReplies;
+    hideReactionaryCheck.checked = data.hideReactionary !== undefined ? !!data.hideReactionary : true;
     highlightCheck.checked = !!data.highlightKeywords;
     keywordInput.value = data.keywords || '';
     postCountSpan.textContent = data.scrapedCount || 0;
@@ -133,6 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
   saveBtn.addEventListener('click', () => {
     const settings = {
       hideReplies: hideRepliesCheck.checked,
+      hideReactionary: hideReactionaryCheck.checked,
       highlightKeywords: highlightCheck.checked,
       keywords: keywordInput.value
     };
