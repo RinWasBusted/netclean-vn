@@ -11,6 +11,68 @@
       background-color: #101010;
       color: #ffffff;
     }
+    .main-toggle-container {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: #1a1a1a;
+      padding: 14px 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      border: 1px solid #2f2f2f;
+    }
+    .main-toggle-label {
+      font-size: 15px;
+      font-weight: bold;
+      color: #ffffff;
+    }
+    /* The switch - the box around the slider */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 48px;
+      height: 26px;
+    }
+    /* Hide default HTML checkbox */
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    /* The slider */
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #333;
+      transition: .3s;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: .3s;
+    }
+    input:checked + .slider {
+      background-color: #0084f4;
+    }
+    input:checked + .slider:before {
+      transform: translateX(22px);
+    }
+    /* Rounded sliders */
+    .slider.round {
+      border-radius: 26px;
+    }
+    .slider.round:before {
+      border-radius: 50%;
+    }
     h2 {
       margin-top: 0;
       font-size: 16px;
@@ -110,6 +172,14 @@
 <body>
   <h2>Threads UI Cleaner</h2>
   
+  <div class="main-toggle-container">
+    <span class="main-toggle-label">Auto Clean</span>
+    <label class="switch">
+      <input type="checkbox" id="autoClean">
+      <span class="slider round"></span>
+    </label>
+  </div>
+
   <div class="option">
     <label for="hideReplies">Hide Replies (Focus on Posts)</label>
     <input type="checkbox" id="hideReplies">
@@ -119,17 +189,6 @@
     <label for="hideReactionary">Hide Reactionary Posts</label>
     <input type="checkbox" id="hideReactionary">
   </div>
-  
-  <div class="option">
-    <label for="highlightKeywords">Highlight Keyword Matches</label>
-    <input type="checkbox" id="highlightKeywords">
-  </div>
-
-  <div class="option">
-    <input type="text" id="keywordInput" placeholder="Keywords (comma separated)" style="width: 100%; padding: 4px; border-radius: 4px; border: 1px solid #333; background: #222; color: #fff; font-size: 12px; margin-bottom: 8px; display: none;">
-  </div>
-
-  <button id="saveBtn">Save Settings</button>
   
   <button id="scrapeBtn" style="background-color: #0084f4; color: #ffffff; margin-top: 8px; margin-bottom: 8px;">Scrape Posts Now</button>
 

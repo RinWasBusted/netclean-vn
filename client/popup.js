@@ -1,9 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const autoCleanCheck = document.getElementById('autoClean');
   const hideRepliesCheck = document.getElementById('hideReplies');
   const hideReactionaryCheck = document.getElementById('hideReactionary');
-  const highlightCheck = document.getElementById('highlightKeywords');
-  const keywordInput = document.getElementById('keywordInput');
-  const saveBtn = document.getElementById('saveBtn');
   const scrapeBtn = document.getElementById('scrapeBtn');
   const postCountSpan = document.getElementById('postCount');
   const feedContainer = document.getElementById('feedContainer');
@@ -69,18 +67,35 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-// Load saved settings & scraped items
-  chrome.storage.local.get(['hideReplies', 'hideReactionary', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], (data) => {
+  // Helper to save settings automatically
+  function saveSettings() {
+    const settings = {
+      autoClean: autoCleanCheck.checked,
+      hideReplies: hideRepliesCheck.checked,
+      hideReactionary: hideReactionaryCheck.checked
+    };
+
+    chrome.storage.local.set(settings, () => {
+      // Notify active tab about the change
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0] && tabs[0].id) {
+          chrome.tabs.sendMessage(tabs[0].id, { type: 'SETTINGS_CHANGED', settings });
+        }
+      });
+    });
+  }
+
+  autoCleanCheck.addEventListener('change', saveSettings);
+  hideRepliesCheck.addEventListener('change', saveSettings);
+  hideReactionaryCheck.addEventListener('change', saveSettings);
+
+  // Load saved settings & scraped items
+  chrome.storage.local.get(['autoClean', 'hideReplies', 'hideReactionary', 'scrapedCount', 'scrapedPostsList'], (data) => {
+    autoCleanCheck.checked = data.autoClean !== undefined ? !!data.autoClean : true;
     hideRepliesCheck.checked = !!data.hideReplies;
     hideReactionaryCheck.checked = data.hideReactionary !== undefined ? !!data.hideReactionary : true;
-    highlightCheck.checked = !!data.highlightKeywords;
-    keywordInput.value = data.keywords || '';
     postCountSpan.textContent = data.scrapedCount || 0;
     renderFeed(data.scrapedPostsList);
-
-    if (highlightCheck.checked) {
-      keywordInput.style.display = 'block';
-    }
   });
 
   // Listen to background/content script messages for live updates
@@ -109,58 +124,43 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  highlightCheck.addEventListener('change', () => {
-    keywordInput.style.display = highlightCheck.checked ? 'block' : 'none';
-  });
-
   scrapeBtn.addEventListener('click', () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0] && tabs[0].id) {
-        scrapeBtn.textContent = 'Scraping...';
-        scrapeBtn.disabled = true;
-        chrome.tabs.sendMessage(tabs[0].id, { type: 'TRIGGER_SCRAPE' }, (response) => {
-          if (chrome.runtime.lastError) {
-            scrapeBtn.textContent = 'Error: Open Threads!';
-          } else {
-            scrapeBtn.textContent = response && response.newCount !== undefined ? `Scraped! (${response.newCount} new)` : 'Scraped!';
-          }
-          setTimeout(() => {
-            scrapeBtn.textContent = 'Scrape Posts Now';
-            scrapeBtn.disabled = false;
-          }, 1500);
-        });
-      } else {
-        scrapeBtn.textContent = 'Error: No active tab!';
+    chrome.storage.local.get('autoClean', (data) => {
+      const isAutoCleanEnabled = data.autoClean !== undefined ? !!data.autoClean : true;
+      if (!isAutoCleanEnabled) {
+        scrapeBtn.textContent = 'Auto Clean is Off';
         setTimeout(() => {
           scrapeBtn.textContent = 'Scrape Posts Now';
         }, 1500);
+        return;
       }
-    });
-  });
 
-  saveBtn.addEventListener('click', () => {
-    const settings = {
-      hideReplies: hideRepliesCheck.checked,
-      hideReactionary: hideReactionaryCheck.checked,
-      highlightKeywords: highlightCheck.checked,
-      keywords: keywordInput.value
-    };
-
-    chrome.storage.local.set(settings, () => {
-      // Notify active tab about the change
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0] && tabs[0].id) {
-          chrome.tabs.sendMessage(tabs[0].id, { type: 'SETTINGS_CHANGED', settings });
+          scrapeBtn.textContent = 'Scraping...';
+          scrapeBtn.disabled = true;
+          chrome.tabs.sendMessage(tabs[0].id, { type: 'TRIGGER_SCRAPE' }, (response) => {
+            if (chrome.runtime.lastError) {
+              scrapeBtn.textContent = 'Error: Open Threads!';
+            } else {
+              if (response && response.status === 'disabled') {
+                scrapeBtn.textContent = 'Auto Clean is Off';
+              } else {
+                scrapeBtn.textContent = response && response.newCount !== undefined ? `Scraped! (${response.newCount} new)` : 'Scraped!';
+              }
+            }
+            setTimeout(() => {
+              scrapeBtn.textContent = 'Scrape Posts Now';
+              scrapeBtn.disabled = false;
+            }, 1500);
+          });
+        } else {
+          scrapeBtn.textContent = 'Error: No active tab!';
+          setTimeout(() => {
+            scrapeBtn.textContent = 'Scrape Posts Now';
+          }, 1500);
         }
       });
-      
-      const originalText = saveBtn.textContent;
-      saveBtn.textContent = 'Saved!';
-      saveBtn.disabled = true;
-      setTimeout(() => {
-        saveBtn.textContent = originalText;
-        saveBtn.disabled = false;
-      }, 1000);
     });
   });
 });

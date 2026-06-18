@@ -5,10 +5,9 @@
  */
 
 let settings = {
+  autoClean: true,
   hideReplies: false,
-  hideReactionary: true,
-  highlightKeywords: false,
-  keywords: ''
+  hideReactionary: true
 };
 
 let serverUrl = 'http://localhost:5000'; // fallback default
@@ -71,6 +70,10 @@ function startObserver() {
   if (observer) return;
   observer = new MutationObserver(() => {
     if (isProcessing) return;
+    if (!settings.autoClean) {
+      stopObserver();
+      return;
+    }
     processPage();
   });
   observer.observe(document.body, {
@@ -79,13 +82,19 @@ function startObserver() {
   });
 }
 
+function stopObserver() {
+  if (observer) {
+    observer.disconnect();
+    observer = null;
+  }
+}
+
 // Initialize settings and scraped posts from local storage
-chrome.storage.local.get(['hideReplies', 'hideReactionary', 'highlightKeywords', 'keywords', 'scrapedCount', 'scrapedPostsList'], async (data) => {
+chrome.storage.local.get(['autoClean', 'hideReplies', 'hideReactionary', 'scrapedCount', 'scrapedPostsList'], async (data) => {
   await loadEnv();
+  settings.autoClean = data.autoClean !== undefined ? !!data.autoClean : true;
   settings.hideReplies = !!data.hideReplies;
   settings.hideReactionary = data.hideReactionary !== undefined ? !!data.hideReactionary : true;
-  settings.highlightKeywords = !!data.highlightKeywords;
-  settings.keywords = data.keywords || '';
   scrapedCount = data.scrapedCount || 0;
   scrapedPostsList = data.scrapedPostsList || [];
   
@@ -94,15 +103,31 @@ chrome.storage.local.get(['hideReplies', 'hideReactionary', 'highlightKeywords',
     if (item.id) processedPosts.add(item.id);
   });
   
-  processPage();
-  startObserver();
+  if (settings.autoClean) {
+    processPage();
+    startObserver();
+  }
 });
 
 // Listen for messages/updates from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SETTINGS_CHANGED') {
+    const wasAutoClean = settings.autoClean;
     settings = message.settings;
-    processPage();
+    if (settings.autoClean) {
+      processPage();
+      startObserver();
+    } else {
+      stopObserver();
+      // Hủy classification request đang chờ debounce, tránh gọi API "trễ"
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      classificationQueue = [];
+      // Restore all hidden elements on Threads
+      restoreAllHiddenPosts();
+    }
   } else if (message.type === 'CLEAR_DATA') {
     processedPosts.clear();
     scrapedCount = 0;
@@ -112,12 +137,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // Keep message channel open for async response
   } else if (message.type === 'TRIGGER_SCRAPE') {
+    if (!settings.autoClean) {
+      if (sendResponse) sendResponse({ status: 'disabled', newCount: 0 });
+      return false;
+    }
     const beforeCount = scrapedCount;
     processPage();
     const afterCount = scrapedCount;
     const newCount = afterCount - beforeCount;
     if (sendResponse) sendResponse({ status: 'success', newCount });
     return false;
+  }
+});
+
+// React to storage changes dynamically (robust source of truth fallback)
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local') {
+    let changed = false;
+    if (changes.autoClean !== undefined) {
+      settings.autoClean = !!changes.autoClean.newValue;
+      changed = true;
+    }
+    if (changes.hideReplies !== undefined) {
+      settings.hideReplies = !!changes.hideReplies.newValue;
+      changed = true;
+    }
+    if (changes.hideReactionary !== undefined) {
+      settings.hideReactionary = !!changes.hideReactionary.newValue;
+      changed = true;
+    }
+
+    if (changed) {
+      if (settings.autoClean) {
+        processPage();
+        startObserver();
+      } else {
+        stopObserver();
+        // Hủy classification request đang chờ debounce, tránh gọi API "trễ"
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = null;
+        }
+        classificationQueue = [];
+        restoreAllHiddenPosts();
+      }
+    }
   }
 });
 
@@ -156,6 +220,10 @@ function findPostElements() {
 }
 
 function processPage() {
+  if (!settings.autoClean) {
+    restoreAllHiddenPosts();
+    return;
+  }
   if (isProcessing) return;
   isProcessing = true;
   const posts = findPostElements();
@@ -179,7 +247,7 @@ function processPage() {
 
     const textContent = postDetails.caption;
 
-    if (!processedPosts.has(postId)) {
+    if (settings.autoClean && !processedPosts.has(postId)) {
       processedPosts.add(postId);
       scrapedCount++;
 
@@ -211,10 +279,10 @@ function processPage() {
       isReactionaryPost = true;
     }
 
-    if ((isReply && settings.hideReplies) || (isReactionaryPost && settings.hideReactionary)) {
+    if (settings.autoClean && ((isReply && settings.hideReplies) || (isReactionaryPost && settings.hideReactionary))) {
       post.setAttribute('data-ext-hidden', 'true');
 
-      // Clean up any temporary debugging highlight styles
+      // Clean up any temporary styles if any
       if (contentTag) {
         contentTag.style.removeProperty('border');
         contentTag.style.removeProperty('background-color');
@@ -230,22 +298,9 @@ function processPage() {
       post.removeAttribute('data-ext-hidden');
     }
 
-    // Keyword highlighting/filtering
-    if (settings.highlightKeywords && settings.keywords.trim() !== '') {
-      const keywordList = settings.keywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
-      const matchesKeyword = keywordList.some(keyword => textContent.toLowerCase().includes(keyword));
-      
-      if (matchesKeyword) {
-        post.style.border = '2px dashed #ff3040';
-        post.style.backgroundColor = 'rgba(255, 48, 64, 0.05)';
-      } else {
-        post.style.border = '';
-        post.style.backgroundColor = '';
-      }
-    } else {
-      post.style.border = '';
-      post.style.backgroundColor = '';
-    }
+    // Keyword highlighting/filtering has been deleted
+    post.style.border = '';
+    post.style.backgroundColor = '';
   });
 
   // Save changes if new posts were scraped
@@ -275,6 +330,27 @@ function processPage() {
   } finally {
     isProcessing = false;
   }
+}
+
+/**
+ * Restores visibility to all elements that were hidden by the extension
+ */
+function restoreAllHiddenPosts() {
+  const posts = findPostElements();
+  posts.forEach((post) => {
+    post.removeAttribute('data-ext-hidden');
+    post.style.border = '';
+    post.style.backgroundColor = '';
+    
+    // Also clean up any styles from inner content tags if modified
+    const postDetails = extractPostCaption(post);
+    const contentTag = postDetails.targetElement;
+    if (contentTag) {
+      contentTag.style.removeProperty('border');
+      contentTag.style.removeProperty('background-color');
+      contentTag.style.removeProperty('color');
+    }
+  });
 }
 
 /**
@@ -398,6 +474,11 @@ let classificationQueue = [];
 let debounceTimer = null;
 
 function classifyPostsBatch(newItems) {
+  if (!settings.autoClean) {
+    classificationQueue = [];
+    return;
+  }
+
   // Add new items to classification queue
   classificationQueue.push(...newItems);
 
@@ -412,6 +493,7 @@ function classifyPostsBatch(newItems) {
     classificationQueue = [];
 
     if (batchToProcess.length === 0) return;
+    if (!settings.autoClean) return; // Chặn fetch nếu vừa bị tắt
 
     const validItems = batchToProcess.filter(item => item.caption && item.caption !== '[No text content]');
     if (validItems.length === 0) return;
