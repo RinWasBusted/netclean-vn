@@ -1,0 +1,14 @@
+service: "service_qwen:QwenThoibaoClassifierService"
+labels:
+  owner: user
+  project: netclean-vn
+  model: qwen-thoibao-classifier-lora
+python:
+  packages:
+    - torch
+    - transformers
+    - peft
+    - accelerate
+    - bentoml>=1.4.0
+models:
+  - qwen_thoibao_classifier_lora:latest

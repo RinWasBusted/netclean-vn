@@ -1,0 +1,5 @@
+bentoml>=1.2.0
+torch
+transformers
+peft
+accelerate
