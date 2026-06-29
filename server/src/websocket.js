@@ -1,5 +1,11 @@
 import { WebSocketServer } from 'ws';
 import { performClassification } from './controllers/classify.controller.js';
+import { performClassificationQwen } from './controllers/classify-qwen.controller.js';
+
+// Pick the classifier the extension talks to over WebSocket.
+// Set CLASSIFIER=qwen to route to the Qwen LoRA service; defaults to PhoBERT.
+const classify =
+  process.env.CLASSIFIER === 'qwen' ? performClassificationQwen : performClassification;
 
 export const initWebSocket = (server) => {
   const wss = new WebSocketServer({ server });
@@ -21,7 +27,7 @@ export const initWebSocket = (server) => {
           }
 
           const texts = items.map(item => item.text);
-          const predictions = await performClassification(texts);
+          const predictions = await classify(texts);
 
           const results = items.map((item, index) => ({
             id: item.id,
